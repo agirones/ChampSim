@@ -64,6 +64,10 @@ void O3_CPU::begin_phase()
   begin_phase_instr = num_retired;
   begin_phase_time = current_time;
 
+  if (!warmup) {
+    reg_allocator.reset_register_lifetime_histogram();
+  }
+
   // Record where the next phase begins
   stats_type stats;
   stats.name = "CPU " + std::to_string(cpu);
@@ -83,6 +87,12 @@ void O3_CPU::end_phase(unsigned finished_cpu)
     finish_phase_time = current_time;
 
     roi_stats = sim_stats;
+
+    if (!warmup) {
+      fmt::print("CPU {} ", cpu);
+      reg_allocator.print_register_lifetime_histogram();
+      reg_allocator.print_zero_read_producer_breakdown();
+    }
   }
 }
 
@@ -439,8 +449,8 @@ void O3_CPU::do_scheduling(ooo_model_instr& instr)
   }
 
   for (auto& dreg : instr.destination_registers) {
-    // rename destination register
-    dreg = reg_allocator.rename_dest_register(dreg, instr.instr_id);
+    const auto arch_reg = dreg;
+    dreg = reg_allocator.rename_dest_register(dreg, instr, arch_reg);
   }
 
   instr.scheduled = true;
