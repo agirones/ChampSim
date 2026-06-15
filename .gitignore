@@ -30,6 +30,7 @@ compile_commands.json
 
 traces/
 runs/output/
+runs/micro26/
 
 .vscode/
 **/.DS_Store
