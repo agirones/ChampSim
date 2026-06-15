@@ -28,5 +28,8 @@ absolute.options
 .cache/
 compile_commands.json
 
+traces/
+runs/output/
+
 .vscode/
 **/.DS_Store
