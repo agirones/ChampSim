@@ -14,7 +14,8 @@ ChampSim stdout captured in run logs, e.g.:
     2 reads: ...
     3+ reads: ...
 
-Read from: runs/output/micro26/read_reg/cs_logs/*.log
+Read from: runs/output/micro26/read_reg/cs_logs/<suite>/*.log
+  Suites: google_traces, spec17, graph, ai, cvp-1, cvp-1-fix (default: all six)
 
 The rightmost bar is the count-weighted mean across all traces.
 
@@ -29,6 +30,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]  # .../ChampSim/
 LOG_DIR = ROOT / "runs/output/micro26/read_reg/cs_logs"
 OUTPUT_TEX = ROOT / "runs/output/micro26/read_reg/graphs/read_reg.tex"
+DEFAULT_TRACE_SUITES = ("google_traces", "spec17", "graph", "ai", "cvp-1", "cvp-1-fix")
+SUITE_LABELS = {
+    "google_traces": "google",
+    "spec17": "spec17",
+    "graph": "graph",
+    "ai": "ai",
+    "cvp-1": "cvp-1",
+    "cvp-1-fix": "cvp-1-fix",
+}
 
 CATEGORY_KEYS = ["0", "1", "2", "3_or_more"]
 CATEGORY_LABELS = ["0", "1", "2", r"3 or more"]
@@ -51,16 +61,38 @@ def benchmark_from_log(path: Path, log_root: Path | None = None) -> str:
             break
     if ".champsim" in name:
         name = name.split(".champsim", 1)[0]
+    if name.endswith(".trace"):
+        name = name[: -len(".trace")]
     if log_root is not None and path.parent != log_root:
         name = f"{path.parent.name}/{name}"
     return name
 
 
-def iter_log_files(log_dir: Path) -> list[Path]:
-    logs = sorted(log_dir.glob("**/*.log"))
-    if logs:
-        return logs
-    return sorted(log_dir.glob("*.log"))
+def parse_trace_suites(suites_arg: str) -> tuple[str, ...]:
+    allowed = set(DEFAULT_TRACE_SUITES)
+    selected: list[str] = []
+    for suite in suites_arg.split(","):
+        suite = suite.strip()
+        if not suite:
+            continue
+        if suite not in allowed:
+            allowed_list = ", ".join(DEFAULT_TRACE_SUITES)
+            raise SystemExit(f"error: unknown trace suite '{suite}' (allowed: {allowed_list})")
+        selected.append(suite)
+    if not selected:
+        raise SystemExit("error: no trace suites selected")
+    return tuple(dict.fromkeys(selected))
+
+
+def iter_log_files(log_dir: Path, suites: tuple[str, ...] = DEFAULT_TRACE_SUITES) -> list[Path]:
+    logs: list[Path] = []
+    for suite in suites:
+        suite_dir = log_dir / suite
+        if not suite_dir.is_dir():
+            print(f"  WARNING: log suite directory not found: {suite_dir}")
+            continue
+        logs.extend(sorted(suite_dir.glob("*.log")))
+    return sorted(logs)
 
 
 def parse_log(log_file: Path) -> dict[str, float] | None:
@@ -91,12 +123,12 @@ def parse_log(log_file: Path) -> dict[str, float] | None:
     return counts
 
 
-def collect_data(log_dir: Path, debug_bm: str = "") -> dict[str, dict[str, float]]:
+def collect_data(log_dir: Path, suites: tuple[str, ...], debug_bm: str = "") -> dict[str, dict[str, float]]:
     if not log_dir.exists():
         print(f"ERROR: log directory not found: {log_dir}")
         return {}
 
-    log_files = iter_log_files(log_dir)
+    log_files = iter_log_files(log_dir, suites)
     if not log_files:
         print(f"WARNING: no .log files found under {log_dir}")
         return {}
@@ -315,6 +347,11 @@ def main() -> None:
         help="Output .tex file path",
     )
     parser.add_argument(
+        "--suites",
+        default=",".join(DEFAULT_TRACE_SUITES),
+        help="Comma-separated log suites under --log-dir (default: google_traces,spec17,graph,ai,cvp-1,cvp-1-fix)",
+    )
+    parser.add_argument(
         "--debug",
         metavar="TRACE",
         default="",
@@ -324,11 +361,12 @@ def main() -> None:
 
     log_dir = args.log_dir.resolve()
     output_tex = args.output.resolve()
+    suites = parse_trace_suites(args.suites)
 
-    print(f"Collecting register-read histograms from {log_dir} ...")
+    print(f"Collecting register-read histograms from {log_dir} (suites: {', '.join(suites)}) ...")
     if args.debug:
         print(f"DEBUG mode: showing all numbers for '{args.debug}'\n")
-    data = collect_data(log_dir, debug_bm=args.debug)
+    data = collect_data(log_dir, suites, debug_bm=args.debug)
     if not data:
         print("No data found – nothing to plot.")
         return
@@ -343,19 +381,16 @@ def main() -> None:
         row = f"{bm:<30}" + "".join(f"{v:>11.2f}%" for v in pct)
         print(row)
 
-    google_bms = suite_benchmarks(data, "google_traces")
-    spec_bms = suite_benchmarks(data, "spec17")
-
     means = compute_mean_percentages(data, benchmarks)
-    google_means = compute_mean_percentages(data, google_bms)
-    spec_means = compute_mean_percentages(data, spec_bms)
 
     print("-" * len(header))
     print_mean_row("Mean (all)", means, 30)
-    if google_bms:
-        print_mean_row(f"Mean (google, n={len(google_bms)})", google_means, 30)
-    if spec_bms:
-        print_mean_row(f"Mean (spec17, n={len(spec_bms)})", spec_means, 30)
+    for suite in suites:
+        bms = suite_benchmarks(data, suite)
+        if not bms:
+            continue
+        label = SUITE_LABELS.get(suite, suite)
+        print_mean_row(f"Mean ({label}, n={len(bms)})", compute_mean_percentages(data, bms), 30)
 
     generate_tikz(data, output_tex)
 

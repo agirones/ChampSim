@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
-# Run ChampSim on traces under traces/google_traces and/or traces/spec17 with 0
-# warmup and 100M simulation instructions by default. Traces packed in *.zip
-# archives are extracted first. Individual runs are launched in parallel.
+# Run ChampSim on traces under traces/{google_traces,spec17,graph,ai,cvp-1,cvp-1-fix}
+# with 0 warmup and 50M simulation instructions by default. Traces packed in
+# *.zip or *.tar archives are extracted first. Individual runs are launched in parallel.
 #
 # Usage:
-#   ./run_all.sh                              # both suites (default)
+#   ./run_all.sh                              # google_traces + spec17 (default)
+#   TRACE_SUITES=cvp-1 ./run_all.sh
+#   TRACE_SUITES=cvp-1-fix ./run_all.sh
+#   TRACE_SUITES=ai ./run_all.sh
+#   TRACE_SUITES=graph ./run_all.sh
 #   TRACE_SUITES=google_traces ./run_all.sh
 #   TRACE_SUITES=spec17 ./run_all.sh
-#   TRACE_SUITES=google_traces,spec17 JOBS=8 ./run_all.sh
+#   TRACE_SUITES=google_traces,spec17,graph,ai,cvp-1,cvp-1-fix JOBS=8 ./run_all.sh
 #   CHAMPSIM_TOOLBOX=champsim-dev ./run_all.sh
 #
 set -euo pipefail
@@ -37,7 +41,7 @@ Usage: $(basename "$0")
 
 Environment variables:
   TRACE_SUITES   Comma-separated trace suites to run (default: google_traces,spec17)
-                 Allowed values: google_traces, spec17
+                 Allowed values: google_traces, spec17, graph, ai, cvp-1, cvp-1-fix
   WARMUP         Warmup instructions (default: 0)
   SIM            Simulation instructions (default: 100000000)
   JOBS           Parallel jobs (default: nproc)
@@ -50,7 +54,6 @@ EOF
 }
 
 parse_trace_suites() {
-  local -a valid=(google_traces spec17)
   local -a selected=()
   local suite
 
@@ -59,13 +62,13 @@ parse_trace_suites() {
     suite="${suite// /}"
     [[ -n "${suite}" ]] || continue
     case "${suite}" in
-      google_traces|spec17) selected+=("${suite}") ;;
+      google_traces|spec17|graph|ai|cvp-1|cvp-1-fix) selected+=("${suite}") ;;
       -h|--help)
         usage
         exit 0
         ;;
       *)
-        echo "error: unknown trace suite '${suite}' (allowed: google_traces, spec17)" >&2
+        echo "error: unknown trace suite '${suite}' (allowed: google_traces, spec17, graph, ai, cvp-1, cvp-1-fix)" >&2
         exit 1
         ;;
     esac
@@ -104,6 +107,29 @@ extract_zip_traces() {
   done
 }
 
+extract_tar_traces() {
+  local trace_dir=$1
+  shopt -s nullglob
+  local archive member base dest
+  [[ -d "${trace_dir}" ]] || return 0
+
+  for archive in "${trace_dir}"/*.tar "${trace_dir}"/*.tar.gz "${trace_dir}"/*.tgz; do
+    [[ -f "${archive}" ]] || continue
+    [[ -s "${archive}" ]] || continue
+    while IFS= read -r member; do
+      [[ -n "${member}" ]] || continue
+      base=$(basename "${member}")
+      dest="${trace_dir}/${base}"
+      if [[ -f "${dest}" ]]; then
+        echo "[extract:${trace_dir##*/}] skip ${base} (already present)"
+        continue
+      fi
+      echo "[extract:${trace_dir##*/}] ${base} from $(basename "${archive}")"
+      tar -xf "${archive}" -C "${trace_dir}" --strip-components=1 --no-same-owner "${member}"
+    done < <(tar -tf "${archive}" | grep -E '\.(gz|xz|bz2)$' || true)
+  done
+}
+
 discover_traces() {
   local trace_dir=$1
   shopt -s nullglob
@@ -115,7 +141,7 @@ discover_traces() {
   for f in "${trace_dir}"/*; do
     [[ -f "${f}" ]] || continue
     case "${f}" in
-      *.zip|*.sha256*) continue ;;
+      *.zip|*.sha256*|*.tar|*.tar.gz|*.tgz) continue ;;
       *.gz|*.xz|*.bz2) traces+=("${f}") ;;
       *.champsim|*.champsim-*|*.champsimtrace|*.champsimtrace.*)
         if [[ -f "${f}.gz" || -f "${f}.xz" || -f "${f}.bz2" ]]; then
@@ -155,7 +181,7 @@ run_champsim() {
   fi
 }
 
-export -f run_champsim extract_zip_traces discover_traces
+export -f run_champsim extract_zip_traces extract_tar_traces discover_traces
 export CHAMPSIM_ROOT CHAMPSIM_BIN CHAMPSIM_TOOLBOX RESULTS_DIR WARMUP SIM TRACES_ROOT
 
 main() {
@@ -188,6 +214,7 @@ main() {
     fi
 
     extract_zip_traces "${trace_dir}"
+    extract_tar_traces "${trace_dir}"
 
     while IFS= read -r trace; do
       [[ -n "${trace}" ]] || continue

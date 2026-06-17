@@ -7,7 +7,8 @@ Parses ChampSim logs containing lines like:
   ZERO_READ_PROD category=gpr count=1234567
 
 Only GPR lifetimes are counted by the simulator (special registers excluded).
-Re-run simulations with a rebuilt binary after changing the counter.
+Parses ChampSim logs under runs/output/micro26/read_reg/cs_logs/<suite>/.
+Suites: google_traces, spec17, graph, ai, cvp-1, cvp-1-fix (default: all six).
 
 Output: runs/output/micro26/read_reg/graphs/zero_read_producers.tex
 """
@@ -20,6 +21,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 LOG_DIR = ROOT / "runs/output/micro26/read_reg/cs_logs"
 OUTPUT_TEX = ROOT / "runs/output/micro26/read_reg/graphs/zero_read_producers.tex"
+DEFAULT_TRACE_SUITES = ("google_traces", "spec17", "graph", "ai", "cvp-1", "cvp-1-fix")
+SUITE_LABELS = {
+    "google_traces": "google",
+    "spec17": "spec17",
+    "graph": "graph",
+    "ai": "ai",
+    "cvp-1": "cvp-1",
+    "cvp-1-fix": "cvp-1-fix",
+}
 
 ZERO_READ_LINE = re.compile(r"^ZERO_READ_PROD category=(\S+) count=(\d+)\s*$")
 
@@ -35,16 +45,38 @@ def benchmark_from_log(path: Path, log_root: Path | None = None) -> str:
             break
     if ".champsim" in name:
         name = name.split(".champsim", 1)[0]
+    if name.endswith(".trace"):
+        name = name[: -len(".trace")]
     if log_root is not None and path.parent != log_root:
         name = f"{path.parent.name}/{name}"
     return name
 
 
-def iter_log_files(log_dir: Path) -> list[Path]:
-    logs = sorted(log_dir.glob("**/*.log"))
-    if logs:
-        return logs
-    return sorted(log_dir.glob("*.log"))
+def parse_trace_suites(suites_arg: str) -> tuple[str, ...]:
+    allowed = set(DEFAULT_TRACE_SUITES)
+    selected: list[str] = []
+    for suite in suites_arg.split(","):
+        suite = suite.strip()
+        if not suite:
+            continue
+        if suite not in allowed:
+            allowed_list = ", ".join(DEFAULT_TRACE_SUITES)
+            raise SystemExit(f"error: unknown trace suite '{suite}' (allowed: {allowed_list})")
+        selected.append(suite)
+    if not selected:
+        raise SystemExit("error: no trace suites selected")
+    return tuple(dict.fromkeys(selected))
+
+
+def iter_log_files(log_dir: Path, suites: tuple[str, ...] = DEFAULT_TRACE_SUITES) -> list[Path]:
+    logs: list[Path] = []
+    for suite in suites:
+        suite_dir = log_dir / suite
+        if not suite_dir.is_dir():
+            print(f"  WARNING: log suite directory not found: {suite_dir}")
+            continue
+        logs.extend(sorted(suite_dir.glob("*.log")))
+    return sorted(logs)
 
 
 def parse_log(log_file: Path) -> dict[str, float] | None:
@@ -64,13 +96,13 @@ def parse_log(log_file: Path) -> dict[str, float] | None:
     return dict(counts) if counts else None
 
 
-def collect_data(log_dir: Path) -> dict[str, dict[str, float]]:
+def collect_data(log_dir: Path, suites: tuple[str, ...]) -> dict[str, dict[str, float]]:
     if not log_dir.exists():
         print(f"ERROR: log directory not found: {log_dir}")
         return {}
 
     data: dict[str, dict[str, float]] = {}
-    for log_file in iter_log_files(log_dir):
+    for log_file in iter_log_files(log_dir, suites):
         counts = parse_log(log_file)
         if counts is None:
             print(f"  WARNING: no ZERO_READ_PROD lines in {log_file} (rebuild and re-run ChampSim)")
@@ -110,6 +142,15 @@ def compute_mean_percentages(plot_data: dict[str, dict[str, float]], categories:
     ]
     total_wc = sum(weighted_cat)
     return [100.0 * c / total_wc for c in weighted_cat] if total_wc > 0 else [0.0] * len(categories)
+
+
+def suite_benchmarks(plot_data: dict[str, dict[str, float]], suite: str) -> list[str]:
+    prefix = f"{suite}/"
+    return sorted(bm for bm in plot_data if bm.startswith(prefix))
+
+
+def print_mean_row(label: str, means: list[float], header_width: int) -> None:
+    print(f"{label:<{header_width}}" + "".join(f"{v:>9.1f}%" for v in means))
 
 
 def generate_tikz(data: dict[str, dict[str, float]], categories: list[str], category_labels: list[str], output_path: Path) -> None:
@@ -230,9 +271,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Plot GPR zero-read register lifetimes.")
     parser.add_argument("--log-dir", type=Path, default=LOG_DIR)
     parser.add_argument("--output", type=Path, default=OUTPUT_TEX)
+    parser.add_argument(
+        "--suites",
+        default=",".join(DEFAULT_TRACE_SUITES),
+        help="Comma-separated log suites under --log-dir (default: google_traces,spec17,graph,ai,cvp-1,cvp-1-fix)",
+    )
     args = parser.parse_args()
 
-    raw_data = collect_data(args.log_dir.resolve())
+    suites = parse_trace_suites(args.suites)
+    log_dir = args.log_dir.resolve()
+
+    print(f"Collecting zero-read producer counts from {log_dir} (suites: {', '.join(suites)}) ...")
+    raw_data = collect_data(log_dir, suites)
     if not raw_data:
         print("No zero-read producer data found. Rebuild bin/champsim and re-run the batch script.")
         return
@@ -253,8 +303,16 @@ def main() -> None:
         print(row)
 
     means = compute_mean_percentages(plot_data, categories)
+
     print("-" * len(header))
-    print(f"{'Mean':<30}" + "".join(f"{v:>9.1f}%" for v in means))
+    print_mean_row("Mean (all)", means, 30)
+    for suite in suites:
+        bms = suite_benchmarks(plot_data, suite)
+        if not bms:
+            continue
+        label = SUITE_LABELS.get(suite, suite)
+        subset = {bm: plot_data[bm] for bm in bms}
+        print_mean_row(f"Mean ({label}, n={len(bms)})", compute_mean_percentages(subset, categories), 30)
 
     generate_tikz(plot_data, categories, labels, args.output.resolve())
 
