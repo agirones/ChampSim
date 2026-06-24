@@ -28,6 +28,7 @@ struct physical_register {
   champsim::address producer_ip{};
   reg_write_kind producer_kind{reg_write_kind::unknown};
   branch_type producer_branch{NOT_BRANCH};
+  PHYSICAL_REGISTER_ID superseded_phys_reg{-1}; // frontend phys reg replaced by this rename
 };
 
 class RegisterAllocator
@@ -53,6 +54,7 @@ public:
   PHYSICAL_REGISTER_ID rename_dest_register(int16_t reg, champsim::program_ordered<ooo_model_instr>::id_type producer_id);
   PHYSICAL_REGISTER_ID rename_dest_register(int16_t reg, const ooo_model_instr& producer, int16_t arch_reg);
   PHYSICAL_REGISTER_ID rename_src_register(int16_t reg);
+  void commit_src_register_reads(const std::vector<PHYSICAL_REGISTER_ID>& sources);
   void complete_dest_register(PHYSICAL_REGISTER_ID physreg);
   void retire_dest_register(PHYSICAL_REGISTER_ID physreg);
   void free_register(PHYSICAL_REGISTER_ID physreg);

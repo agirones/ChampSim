@@ -165,12 +165,13 @@ PHYSICAL_REGISTER_ID RegisterAllocator::rename_dest_register(int16_t reg, champs
 {
   assert(!free_registers.empty());
 
+  const PHYSICAL_REGISTER_ID superseded = frontend_RAT[reg];
+
   PHYSICAL_REGISTER_ID phys_reg = free_registers.front();
   free_registers.pop();
   frontend_RAT[reg] = phys_reg;
   physical_register_file.at(phys_reg) = {static_cast<uint16_t>(reg), producer_id, false, true, champsim::address{}, reg_write_kind::unknown,
-                                         NOT_BRANCH};
-  read_counts.at(phys_reg) = 0;
+                                         NOT_BRANCH, superseded};
 
   return phys_reg;
 }
@@ -178,6 +179,8 @@ PHYSICAL_REGISTER_ID RegisterAllocator::rename_dest_register(int16_t reg, champs
 PHYSICAL_REGISTER_ID RegisterAllocator::rename_dest_register(int16_t reg, const ooo_model_instr& producer, int16_t arch_reg)
 {
   assert(!free_registers.empty());
+
+  const PHYSICAL_REGISTER_ID superseded = frontend_RAT[reg];
 
   PHYSICAL_REGISTER_ID phys_reg = free_registers.front();
   free_registers.pop();
@@ -189,8 +192,8 @@ PHYSICAL_REGISTER_ID RegisterAllocator::rename_dest_register(int16_t reg, const 
                                          true,
                                          producer.ip,
                                          classify_producer(producer, arch_reg),
-                                         producer.is_branch ? producer.branch : NOT_BRANCH};
-  read_counts.at(phys_reg) = 0;
+                                         producer.is_branch ? producer.branch : NOT_BRANCH,
+                                         superseded};
 
   return phys_reg;
 }
@@ -206,13 +209,20 @@ PHYSICAL_REGISTER_ID RegisterAllocator::rename_src_register(int16_t reg)
     free_registers.pop();
     frontend_RAT[reg] = phys;
     backend_RAT[reg] = phys; // we assume this register's last write has been committed
-    physical_register_file.at(phys) = {static_cast<uint16_t>(reg), 0, true, true, champsim::address{}, reg_write_kind::trace_entry, NOT_BRANCH};
+    physical_register_file.at(phys) = {static_cast<uint16_t>(reg), 0, true, true, champsim::address{}, reg_write_kind::trace_entry, NOT_BRANCH, -1};
     read_counts.at(phys) = 0;
-  } else {
-    ++read_counts.at(phys);
   }
 
   return phys;
+}
+
+void RegisterAllocator::commit_src_register_reads(const std::vector<PHYSICAL_REGISTER_ID>& sources)
+{
+  for (const auto phys : sources) {
+    if (phys >= 0) {
+      ++read_counts.at(phys);
+    }
+  }
 }
 
 void RegisterAllocator::complete_dest_register(PHYSICAL_REGISTER_ID physreg)
@@ -235,11 +245,14 @@ void RegisterAllocator::retire_dest_register(PHYSICAL_REGISTER_ID physreg)
     record_lifetime_reads(old_phys_reg, read_counts.at(old_phys_reg));
     free_register(old_phys_reg);
   }
+
+  // committed write starts a new lifetime; reads are counted at commit time
+  read_counts.at(physreg) = 0;
 }
 
 void RegisterAllocator::free_register(PHYSICAL_REGISTER_ID physreg)
 {
-  physical_register_file.at(physreg) = {255, 0, false, false, champsim::address{}, reg_write_kind::unknown, NOT_BRANCH};
+  physical_register_file.at(physreg) = {255, 0, false, false, champsim::address{}, reg_write_kind::unknown, NOT_BRANCH, -1};
   read_counts.at(physreg) = 0;
   free_registers.push(physreg);
 }
